@@ -3,21 +3,25 @@ from pydantic import BaseModel
 import joblib
 import pandas as pd
 
-# Load the saved model
-model = joblib.load('model.pkl')
-
+# Load the models dictionary
+models = joblib.load('models_dict.pkl')
 app = FastAPI()
 
-class PredictionInput(BaseModel):
+class PredictionRequest(BaseModel):
     year: int
     month: int
 
 @app.get("/")
 def home():
-    return {"message": "DPS AI Challenge API is live!"}
+    return {"status": "API is online"}
 
 @app.post("/predict")
-def get_prediction(data: PredictionInput):
-    input_df = pd.DataFrame([[data.year, data.month]], columns=['JAHR', 'MONAT_NUM'])
-    prediction = model.predict(input_df)[0]
-    return {"prediction": int(prediction)}
+def predict(data: PredictionRequest):
+    # Default to Alkoholunfälle as per DPS specific mission target
+    target_date = pd.to_datetime(f"{data.year}-{data.month:02d}-01")
+    model = models['Alkoholunfälle']
+    
+    forecast = model.get_prediction(start=target_date, end=target_date)
+    prediction = int(forecast.predicted_mean[0])
+    
+    return {"prediction": prediction}
