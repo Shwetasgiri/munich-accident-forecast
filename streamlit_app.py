@@ -1,105 +1,96 @@
 import streamlit as st
 import pandas as pd
 import joblib
+import numpy as np
+import plotly.express as px
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="Munich Accident Forecast", layout="wide")
+st.set_page_config(page_title="Munich Accident Dashboard", layout="wide")
 
-# Load Data
 @st.cache_data
 def load_data():
     df = pd.read_csv('accidents.csv')
-    df = df[df['MONAT'] != 'Summe']
+    df = df[(df['MONAT'] != 'Summe') & (df['AUSPRAEGUNG'] == 'insgesamt')]
     df['date'] = pd.to_datetime(df['MONAT'], format='%Y%m')
+    df['Year'] = df['date'].dt.year
+    df['Month'] = df['date'].dt.month
     return df
 
 df_all = load_data()
-models = joblib.load('models_dict.pkl')
+model = joblib.load('model.pkl')
 categories = ['Alkoholunfälle', 'Fluchtunfälle', 'Verkehrsunfälle']
-month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-# Sidebar Controls
-st.sidebar.header("🕹️ Controls")
-selected_cat = st.sidebar.selectbox("Select Category", categories)
-user_year = st.sidebar.number_input("Prediction Year", 2021, 2025, 2021)
-user_month = st.sidebar.slider("Prediction Month", 1, 12, 1)
+st.title("🚗 Munich Traffic Accident Analysis")
 
-st.title(f"Traffic Accident Analysis: {selected_cat}")
+# Create Tabs to separate existing work from the new performance view
+tab1, tab2 = st.tabs(["📈 Historical & Prediction", "🎯 Model Performance (2021)"])
 
-# --- SECTION 1: HISTORICAL & SEASONAL ---
-# Filter data strictly <= 2020 for the top charts
-cat_hist = df_all[(df_all['MONATSZAHL'] == selected_cat) & 
-                  (df_all['AUSPRAEGUNG'] == 'insgesamt') & 
-                  (df_all['date'].dt.year <= 2020)].sort_values('date')
+with tab1:
+    # --- HISTORICAL VISUALIZATION (UNCHANGED) ---
+    st.header("Historical Trends & Yearly Comparison")
+    sel_cat = st.selectbox("Select Category:", categories)
+    hist_df = df_all[(df_all['MONATSZAHL'] == sel_cat) & (df_all['Year'] <= 2020)]
 
-col1, col2 = st.columns([2, 1])
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Timeline (2000-2020)")
+        fig1 = px.line(hist_df.sort_values('date'), x='date', y='WERT')
+        st.plotly_chart(fig1, use_container_width=True)
 
-with col1:
-    st.markdown("### 📈 Historical Trend (2000-2020)")
-    fig_hist = go.Figure()
-    fig_hist.add_trace(go.Scatter(x=cat_hist['date'], y=cat_hist['WERT'], line=dict(color='#1f77b4')))
-    fig_hist.update_layout(xaxis_title="Year", yaxis_title="Accident Count", template="plotly_white")
-    st.plotly_chart(fig_hist, use_container_width=True)
+    with col2:
+        st.subheader("Yearly Side-by-Side (Seasonality)")
+        seasonal_df = hist_df[hist_df['Year'] >= 2015]
+        fig2 = px.line(seasonal_df, x='Month', y='WERT', color='Year')
+        fig2.update_layout(xaxis=dict(tickmode='linear', dtick=1))
+        st.plotly_chart(fig2, use_container_width=True)
 
-with col2:
-    st.markdown("### 🗓️ Seasonal Averages")
-    cat_hist['m'] = cat_hist['date'].dt.month
-    seasonal = cat_hist.groupby('m')['WERT'].mean()
-    fig_bar = go.Figure(go.Bar(x=month_names, y=seasonal, marker_color='#636efa'))
-    fig_bar.update_layout(xaxis_title="Month", yaxis_title="Avg Accidents", template="plotly_white")
-    st.plotly_chart(fig_bar, use_container_width=True)
+    # --- PREDICTION SECTION ---
+    st.divider()
+    st.header("🔮 2021 Single Month Prediction")
+    u_month = st.slider("Select Month for 2021", 1, 12, 1)
 
-# --- SECTION 2: PREDICTION ---
-st.divider()
-if st.sidebar.button("🚀 Generate Prediction"):
-    current_model = models[selected_cat]
-    target_date = pd.to_datetime(f"{user_year}-{user_month:02d}-01")
+    if st.button("Predict & Calculate Error"):
+        target_date = pd.to_datetime(f"2021-{u_month:02d}-01")
+        forecast = model.get_prediction(start=target_date, end=target_date)
+        pred_val = int(round(np.expm1(forecast.predicted_mean[0])))
+        
+        actual_row = df_all[(df_all['date'] == target_date) & (df_all['MONATSZAHL'] == 'Alkoholunfälle')]
+        
+        if not actual_row.empty:
+            actual_val = int(actual_row['WERT'].values[0])
+            abs_error = abs(pred_val - actual_val)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Predicted", pred_val)
+            c2.metric("Actual (2021)", actual_val)
+            c3.metric("Absolute Error", abs_error, delta=f"-{abs_error}", delta_color="inverse")
+
+with tab2:
+    st.header("Performance Analysis: Full Year 2021")
+    st.write("Comparing the SARIMA model's forecast against the ground truth for 'Alkoholunfälle'.")
+
+    # 1. Generate predictions for all 12 months of 2021
+    months_2021 = pd.date_range(start='2021-01-01', end='2021-12-01', freq='MS')
+    forecast_2021 = model.get_prediction(start=months_2021[0], end=months_2021[-1])
+    preds = np.expm1(forecast_2021.predicted_mean).round()
+
+    # 2. Get actuals for 2021
+    actuals_df = df_all[(df_all['Year'] == 2021) & (df_all['MONATSZAHL'] == 'Alkoholunfälle')].sort_values('date')
     
-    # AI Forecast
-    forecast = current_model.get_prediction(start=target_date, end=target_date)
-    pred_val = int(forecast.predicted_mean[0])
-    
-    # Results Metrics
-    c1, c2, c3 = st.columns(3)
-    c1.metric("AI Prediction", pred_val)
-    
-    real_row = df_all[(df_all['date'] == target_date) & 
-                       (df_all['MONATSZAHL'] == selected_cat) & 
-                       (df_all['AUSPRAEGUNG'] == 'insgesamt')]
-    
-    if not real_row.empty:
-        actual = int(real_row['WERT'].values[0])
-        error = abs(pred_val - actual)
-        c2.metric("Actual Reality", actual)
-        c3.metric("Error (MAE)", error, delta=f"{((error/actual)*100):.1f}%", delta_color="inverse")
-    else:
-        c2.info("No ground truth data available for this date.")
+    # 3. Create Comparison Table
+    comparison_df = pd.DataFrame({
+        'Month': actuals_df['date'],
+        'Actual': actuals_df['WERT'].values,
+        'Predicted': preds.values
+    })
 
-    # Zoomed Forecast Chart
-    st.markdown(f"### 🔭 Forecast vs. Reality: {selected_cat}")
-    recent_df = df_all[(df_all['MONATSZAHL'] == selected_cat) & 
-                       (df_all['AUSPRAEGUNG'] == 'insgesamt') & 
-                       (df_all['date'] >= '2018-01-01')].sort_values('date')
+    # 4. Plot Comparison
+    fig_perf = go.Figure()
+    fig_perf.add_trace(go.Scatter(x=comparison_df['Month'], y=comparison_df['Actual'], name='Actual Values', line=dict(color='blue', width=3)))
+    fig_perf.add_trace(go.Scatter(x=comparison_df['Month'], y=comparison_df['Predicted'], name='Model Prediction', line=dict(color='orange', dash='dash')))
     
-    fig_pred = go.Figure()
-    # Historical Blue Line
-    fig_pred.add_trace(go.Scatter(
-        x=recent_df[recent_df['date'] <= '2020-12-01']['date'], 
-        y=recent_df[recent_df['date'] <= '2020-12-01']['WERT'], 
-        name="Historical", line=dict(color="#2E86C1", width=3)
-    ))
-    # Actual Green Line (2021+)
-    fig_pred.add_trace(go.Scatter(
-        x=recent_df[recent_df['date'] >= '2021-01-01']['date'], 
-        y=recent_df[recent_df['date'] >= '2021-01-01']['WERT'], 
-        name="Actual Data", line=dict(color="#27AE60", dash='dot')
-    ))
-    # Prediction Point
-    fig_pred.add_trace(go.Scatter(
-        x=[target_date], y=[pred_val], mode="markers+text", 
-        name="Prediction", text=[f"Pred: {pred_val}"], textposition="top center",
-        marker=dict(color="crimson", size=18, symbol="star")
-    ))
-    
-    fig_pred.update_layout(xaxis_title="Timeline", yaxis_title="Accidents", template="plotly_white")
-    st.plotly_chart(fig_pred, use_container_width=True)
+    fig_perf.update_layout(title="Actual vs Predicted Accidents (2021)", xaxis_title="Date", yaxis_title="Number of Accidents")
+    st.plotly_chart(fig_perf, use_container_width=True)
+
+    # 5. Show Metrics
+    mae = np.mean(np.abs(comparison_df['Actual'] - comparison_df['Predicted']))
+    st.metric("Average MAE for 2021", f"{mae:.2f} accidents")
